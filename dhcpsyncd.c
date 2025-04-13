@@ -530,9 +530,17 @@ int parse_leases(FILE *fp, LeaseEntry **leases_out, size_t *count_out) {
             } else if (strcmp(trimmed_line, "}") == 0) {
                 // End of lease block
                 if (in_lease_block && current_ip[0] != '\0' && current_hostname[0] != '\0' && current_end_time > now) {
-                    if (count >= capacity) {
+                    size_t idx;
+                    for (idx = 0; idx < count; idx++) {
+                        if (strcmp(leases[idx].ip, current_ip) == 0 || strcmp(leases[idx].hostname, current_hostname) == 0) {
+                            break;
+                        }
+                    }
+
+                    if (idx >= capacity) {
+                        size_t capacity_old = capacity;
                         capacity = (capacity == 0) ? 16 : capacity * 2;
-                        LeaseEntry *tmp = reallocarray(leases, capacity, sizeof(LeaseEntry));
+                        LeaseEntry *tmp = recallocarray(leases, capacity_old, capacity, sizeof(LeaseEntry));
                         if (!tmp) {
                             logmsg(LOG_ERR, "Failed to allocate memory for leases: %s", strerror(errno));
                             free_leases(leases, count);
@@ -541,16 +549,21 @@ int parse_leases(FILE *fp, LeaseEntry **leases_out, size_t *count_out) {
                         leases = tmp;
                     }
 
-                    leases[count].ip = strdup(current_ip);
-                    leases[count].hostname = strdup(current_hostname);
-                    if (!leases[count].ip || !leases[count].hostname) {
+                    free(leases[idx].ip);
+                    free(leases[idx].hostname);
+                    leases[idx].ip = strdup(current_ip);
+                    leases[idx].hostname = strdup(current_hostname);
+
+                    if (!leases[idx].ip || !leases[idx].hostname) {
                         logmsg(LOG_ERR, "Failed to duplicate strings for lease entry: %s", strerror(errno));
-                        free(leases[count].ip);
-                        free(leases[count].hostname);
-                        free_leases(leases, count);
+                        free(leases[idx].ip);
+                        free(leases[idx].hostname);
+                        free_leases(leases, idx);
                         return -1;
                     }
-                    count++;
+                    if (count < idx + 1) {
+                        count = idx + 1;
+                    }
                 }
                 // Reset state for next lease block
                 in_lease_block = 0;
