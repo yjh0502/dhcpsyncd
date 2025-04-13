@@ -55,8 +55,31 @@ int reload_unbound(void);
 void free_leases(LeaseEntry *leases, size_t count);
 void logmsg(int priority, const char *fmt, ...);
 
+int foreground = 0;
+
+__dead void
+usage(void)
+{
+    extern char *__progname;
+
+    fprintf(stderr, "usage: %s [-d]\n", __progname);
+    exit(1);
+}
+
 // --- Main Function ---
-int main(void) {
+int main(int argc, char *argv[]) {
+    int ch;
+
+    while ((ch = getopt(argc, argv, "d")) != -1) {
+        switch (ch) {
+        case 'd':
+            foreground = 1;
+            continue;
+        default:
+            usage();
+        }
+    }
+
     // 1. Set Timezone to UTC (as per script)
     if (setenv("TZ", "UTC", 1) == -1) {
         err(EXIT_FAILURE, "Failed to set TZ=UTC");
@@ -87,13 +110,15 @@ int main(void) {
 
 
     // 4. Daemonize
-    if (daemon(0, 0) == -1) {
-        logmsg(LOG_ERR, "Failed to daemonize: %s", strerror(errno));
-        closelog();
-        exit(EXIT_FAILURE);
-    }
+    if (!foreground) {
+        if (daemon(0, 0) == -1) {
+            logmsg(LOG_ERR, "Failed to daemonize: %s", strerror(errno));
+            closelog();
+            exit(EXIT_FAILURE);
+        }
 
-    logmsg(LOG_INFO, "Daemonized successfully");
+        logmsg(LOG_INFO, "Daemonized successfully");
+    }
 
     // 5. Write PID file
     if (write_pidfile(PIDFILE) == -1) {
@@ -225,7 +250,12 @@ int main(void) {
 void logmsg(int priority, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    vsyslog(priority, fmt, ap);
+    if (foreground) {
+        vprintf(fmt, ap);
+        printf("\n");
+    } else {
+        vsyslog(priority, fmt, ap);
+    }
     va_end(ap);
 }
 
@@ -325,6 +355,20 @@ int monitor_lease_file(const char *filename) {
     return 0;
 }
 
+const char* skip_first_line(const char* str) {
+    if (!str) {
+        return NULL;
+    }
+    const char* next_line = strchr(str, '\n');
+    return (next_line != NULL) ? next_line + 1 : NULL;
+}
+
+int compare_content(const char *file0, const char *file1) {
+    if (!file0 || !file1) {
+        return -1;
+    }
+    return strcmp(skip_first_line(file0), skip_first_line(file1));
+}
 
 int process_leases(const char *lease_filename, const char *hosts_filename, const char *hosts_tmp_filename) {
     FILE *fp = NULL;
@@ -364,7 +408,7 @@ int process_leases(const char *lease_filename, const char *hosts_filename, const
     }
 
     // Compare with current content
-    if (current_hosts_content && strcmp(current_hosts_content, new_hosts_content) == 0) {
+    if (compare_content(current_hosts_content, new_hosts_content) == 0) {
         logmsg(LOG_DEBUG, "Lease data unchanged, no update needed.");
         result = 0; // Success, but no action taken
         goto cleanup; // Skips writing and reloading
